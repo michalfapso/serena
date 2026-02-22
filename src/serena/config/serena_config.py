@@ -181,6 +181,10 @@ class ProjectConfig(SharedConfig):
     ignore_all_files_in_gitignore: bool = True
     initial_prompt: str = ""
     encoding: str = DEFAULT_SOURCE_FILE_ENCODING
+    ls_specific_settings: dict[Language, dict[str, Any]] = field(default_factory=dict)
+    """
+    Advanced configuration option allowing to configure language server implementation specific options, see SolidLSPSettings for more info.
+    """
 
     SERENA_DEFAULT_PROJECT_FILE = "project.yml"
     FIELDS_WITHOUT_DEFAULTS = {"project_name", "languages"}
@@ -344,6 +348,16 @@ class ProjectConfig(SharedConfig):
             if symbol_info_budget < 0:
                 raise ValueError(f"symbol_info_budget cannot be negative, got: {symbol_info_budget}")
 
+        # Convert ls_specific_settings keys to Language enums
+        ls_specific_settings_dict = data.get("ls_specific_settings", {})
+        ls_specific_settings: dict[Language, dict[str, Any]] = {}
+        for k, v in ls_specific_settings_dict.items():
+            try:
+                ls_specific_settings[Language(k.lower())] = v
+            except ValueError:
+                # ignore invalid language names
+                pass
+
         return cls(
             project_name=data["project_name"],
             languages=languages,
@@ -358,6 +372,7 @@ class ProjectConfig(SharedConfig):
             base_modes=data["base_modes"],
             default_modes=data["default_modes"],
             symbol_info_budget=symbol_info_budget,
+            ls_specific_settings=ls_specific_settings,
         )
 
     def _to_yaml_dict(self) -> dict:
@@ -366,6 +381,7 @@ class ProjectConfig(SharedConfig):
         """
         d = dataclasses.asdict(self)
         d["languages"] = [lang.value for lang in self.languages]
+        d["ls_specific_settings"] = {lang.value: settings for lang, settings in self.ls_specific_settings.items()}
         return d
 
     @classmethod

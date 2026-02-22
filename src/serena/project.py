@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import threading
+from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -430,6 +431,20 @@ class Project(ToStringMixin):
             log.info("Stopping existing language server manager ...")
             self.language_server_manager.stop_all()
             self.language_server_manager = None
+
+        if ls_specific_settings is None:
+            ls_specific_settings = self._serena_config.ls_specific_settings if self._serena_config else {}
+
+        # merge with project-specific settings
+        project_ls_settings = self.project_config.ls_specific_settings
+        if project_ls_settings:
+            # ensure we don't modify the original global settings dictionary
+            ls_specific_settings = deepcopy(ls_specific_settings)
+            for lang, settings in project_ls_settings.items():
+                if lang in ls_specific_settings:
+                    ls_specific_settings[lang].update(settings)
+                else:
+                    ls_specific_settings[lang] = settings
 
         log.info(f"Creating language server manager for {self.project_root}")
         factory = LanguageServerFactory(

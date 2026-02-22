@@ -114,3 +114,7 @@ initial_prompt: ""
 # override of the corresponding setting in serena_config.yml, see the documentation there.
 # If null or missing, the value from the global config is used.
 symbol_info_budget:
+
+# Advanced configuration option allowing to configure language server implementation specific options.
+# See SolidLSPSettings for more info.
+ls_specific_settings: {}
