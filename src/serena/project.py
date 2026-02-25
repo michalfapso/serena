@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import threading
-from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -64,8 +63,8 @@ class Project(ToStringMixin):
         self,
         project_root: str,
         project_config: ProjectConfig,
+        serena_config: "SerenaConfig",
         is_newly_created: bool = False,
-        serena_config: "SerenaConfig | None" = None,
     ):
         self.project_root = project_root
         self.project_config = project_config
@@ -86,11 +85,13 @@ class Project(ToStringMixin):
         self.__ignored_patterns: list[str]
         self.__ignore_spec: pathspec.PathSpec
         self._ignore_spec_available = threading.Event()
-        threading.Thread(name=f"gather-ignorespec[{self.project_config.project_name}]", target=self._gather_ignorespec, daemon=True).start()
+        self._gather_ignorespec_thread = threading.Thread(
+            name=f"gather-ignorespec[{self.project_config.project_name}]", target=self._gather_ignorespec, daemon=True
+        )
+        self._gather_ignorespec_thread.start()
 
     def _gather_ignorespec(self) -> None:
         with LogTime(f"Gathering ignore spec for project {self.project_config.project_name}", logger=log):
-
             # gather ignored paths from the global configuration, project configuration, and gitignore files
             global_ignored_paths = self._serena_config.ignored_paths if self._serena_config else []
             ignored_patterns = list(global_ignored_paths) + list(self.project_config.ignored_paths)
@@ -134,7 +135,7 @@ class Project(ToStringMixin):
     def load(
         cls,
         project_root: str | Path,
-        serena_config: "SerenaConfig | None",
+        serena_config: "SerenaConfig",
         autogenerate: bool = True,
     ) -> "Project":
         project_root = Path(project_root).resolve()
@@ -409,12 +410,35 @@ class Project(ToStringMixin):
             source_file_path=relative_file_path,
         )
 
+    def get_ls_specific_settings(self) -> dict[Language, dict[str, Any]]:
+        """
+        Retrieves the merged language server specific settings for the project.
+        Project-specific settings override global settings on a per-language basis.
+
+        :return: a dictionary mapping languages to their implementation-specific settings
+        :raises ValueError: if an unsupported language key is found in ls_specific_settings
+        """
+        # start with global settings
+        ls_specific_settings: dict[Language, dict[str, Any]] = {}
+
+        def add_settings(settings_dict: dict, source_name: str) -> None:
+            for lang_str, settings in settings_dict.items():
+                try:
+                    lang = Language(lang_str.lower())
+                    ls_specific_settings[lang] = settings
+                except ValueError:
+                    raise ValueError(f"Invalid language '{lang_str}' in {source_name}. Valid languages: {[l.value for l in Language]}")
+
+        add_settings(self._serena_config.ls_specific_settings, "global Serena configuration")
+        add_settings(self.project_config.ls_specific_settings, f"project configuration ({self.path_to_project_yml()})")
+
+        return ls_specific_settings
+
     def create_language_server_manager(
         self,
         log_level: int = logging.INFO,
         ls_timeout: float | None = DEFAULT_TOOL_TIMEOUT - 5,
         trace_lsp_communication: bool = False,
-        ls_specific_settings: dict[Language, Any] | None = None,
     ) -> LanguageServerManager:
         """
         Creates the language server manager for the project, starting one language server per configured programming language.
@@ -422,8 +446,6 @@ class Project(ToStringMixin):
         :param log_level: the log level for the language server
         :param ls_timeout: the timeout for the language server
         :param trace_lsp_communication: whether to trace LSP communication
-        :param ls_specific_settings: optional LS specific configuration of the language server,
-            see docstrings in the inits of subclasses of SolidLanguageServer to see what values may be passed.
         :return: the language server manager, which is also stored in the project instance
         """
         # if there is an existing instance, stop its language servers first
@@ -432,19 +454,7 @@ class Project(ToStringMixin):
             self.language_server_manager.stop_all()
             self.language_server_manager = None
 
-        if ls_specific_settings is None:
-            ls_specific_settings = self._serena_config.ls_specific_settings if self._serena_config else {}
-
-        # merge with project-specific settings
-        project_ls_settings = self.project_config.ls_specific_settings
-        if project_ls_settings:
-            # ensure we don't modify the original global settings dictionary
-            ls_specific_settings = deepcopy(ls_specific_settings)
-            for lang, settings in project_ls_settings.items():
-                if lang in ls_specific_settings:
-                    ls_specific_settings[lang].update(settings)
-                else:
-                    ls_specific_settings[lang] = settings
+        ls_specific_settings = self.get_ls_specific_settings()
 
         log.info(f"Creating language server manager for {self.project_root}")
         factory = LanguageServerFactory(
@@ -507,3 +517,7 @@ class Project(ToStringMixin):
         if self.language_server_manager is not None:
             self.language_server_manager.stop_all(save_cache=True, timeout=timeout)
             self.language_server_manager = None
+
+        if hasattr(self, "_gather_ignorespec_thread") and self._gather_ignorespec_thread.is_alive():
+            # Join the thread to avoid race conditions during shutdown (e.g. in tests)
+            self._gather_ignorespec_thread.join(timeout=0.5)

@@ -117,4 +117,6 @@ symbol_info_budget:
 
 # Advanced configuration option allowing to configure language server implementation specific options.
 # See SolidLSPSettings for more info.
+# Project-specific settings override global settings (from serena_config.yml) on a per-language basis.
+# For example, if you define 'python' settings here, they will completely replace any global 'python' settings.
 ls_specific_settings: {}
